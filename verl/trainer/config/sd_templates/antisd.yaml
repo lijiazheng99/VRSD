@@ -1,0 +1,27 @@
+# @package actor_rollout_ref.actor.self_distillation
+# The AntiSD authors' teacher-prompt templates -- the actor.yaml defaults of FloyedShen/AntiSD @1ee032d, which
+# their recipe relies on (their launcher does not pass them). The other methods keep SDPO's templates (actor.yaml).
+# Loaded ONLY by the antisd method via `+sd_templates=antisd` (see scripts/antisd_recipe.sh).
+
+
+reprompt_truncation: left
+
+reprompt_template: |-
+  {prompt}{solution}{feedback}
+
+  Now solve this problem step by step.
+
+solution_template: |-
+
+  Your previous attempt:
+
+  {successful_previous_attempt}
+
+feedback_template: |-
+
+  Previous assessment: {feedback_raw}
+
+reprompt_template_feedback_only: |-
+  {prompt}{feedback}
+
+  Now solve this problem step by step.

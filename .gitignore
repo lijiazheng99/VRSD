@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+datasets/
+outputs/
+output/
+checkpoints/
+wandb/
+merged/
+*.log
+/*.json
+/patterns_*

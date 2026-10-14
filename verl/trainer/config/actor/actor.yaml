@@ -1,0 +1,787 @@
+# Format checks enforced on CI:
+# 1. Comments must appear above each field.
+# 2. There must be a blank line between each field.
+# 3. Inline comments (after a field on the same line) are not allowed.
+# 4. Indentation level is respected for nested fields.
+
+# Target class for this configuration
+_target_: verl.workers.config.ActorConfig
+
+# Number of rollouts per update (mirrors actor rollout_n)
+rollout_n: ${oc.select:actor_rollout_ref.rollout.n,1}
+
+# the abstract actor configs
+# fsdp, fsdp2 or megatron. must be set.
+strategy: ???
+
+# Split each sample into sub-batches of this size for PPO
+ppo_mini_batch_size: 256
+
+# [Deprecated] Global micro batch size
+ppo_micro_batch_size: null
+
+# Local per-GPU micro batch size
+ppo_micro_batch_size_per_gpu: null
+
+# Whether to automatically adjust batch size at runtime
+# oc.select: the default val for ref.log_prob_use_dynamic_bsz
+use_dynamic_bsz: false
+
+# Max tokens per GPU in one PPO batch; affects gradient accumulation
+# Typically it should be: n * ${data.max_prompt_length} + ${data.max_response_length}
+# oc.select: the default val for ref.log_prob_max_token_len_per_gpu
+ppo_max_token_len_per_gpu: 16384
+
+# PPO clip ratio
+clip_ratio: 0.2
+
+# Lower bound for asymmetric clipping (used in dual-clip PPO)
+clip_ratio_low: 0.2
+
+# Upper bound for asymmetric clipping (used in dual-clip PPO)
+clip_ratio_high: 0.2
+
+# Positive and negative tau for smoothing function in SAPO (https://arxiv.org/pdf/2511.20347)
+# default values used in the paper with Qwen3-30B-A3B-Base
+tau_pos: 1.0
+
+# negative tau for smoothing function in SAPO
+tau_neg: 1.05
+
+# Whether to freeze vision model, if set true, it will be freeze vision model
+freeze_vision_tower: false
+
+# policy loss config
+policy_loss:
+
+  # # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl.workers.config.PolicyLossConfig
+
+  # Loss function mode: vanilla / clip-cov / kl-cov / gpg / sdpo
+  loss_mode: "vanilla"
+
+  # Ratio of tokens to be clipped for clip-cov loss
+  clip_cov_ratio: 0.0002
+
+  # Lower bound for clip-cov loss
+  clip_cov_lb: 1.0
+
+  # Upper bound for clip-cov loss
+  clip_cov_ub: 5.0
+
+  # Ratio of tokens to be applied kl penalty for kl-cov loss
+  kl_cov_ratio: 0.0002
+
+  # KL divergence penalty coefficient
+  ppo_kl_coef: 0.1
+
+# self-distillation config
+self_distillation:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl.workers.config.SelfDistillationConfig
+
+  # Distillation is enabled when policy_loss.loss_mode == "sdpo"
+
+  # Whether to use full-logit KL distillation
+  full_logit_distillation: True
+
+  # Top-k for logit distillation; null uses full logits
+  distillation_topk: 100
+
+  # Whether to add a tail bucket when using distillation_topk
+  distillation_add_tail: True
+
+  # KL interpolation coefficient: 0.0=forward KL, 1.0=reverse KL, in-between=JSD
+  alpha: 0.5 
+
+  # Minimum sequence reward to be considered successful
+  success_reward_threshold: 0.5
+
+  # Teacher regularization method: "ema" or "trust-region"
+  teacher_regularization: ema
+
+  # EMA update rate for teacher weights, or trust-region mixing coefficient
+  teacher_update_rate: 0.05 
+
+  # Maximum length of the reprompted prompt
+  max_reprompt_len: 10240
+
+  # Truncation method for the reprompted prompt (recommended to use "right" or "error")
+  reprompt_truncation: right # "left", "right", "error"
+
+  # Whether to not reprompt on self-success
+  dont_reprompt_on_self_success: True
+
+  # Whether to remove <think>...</think> tags from successful demonstrations before reprompting
+  remove_thinking_from_demonstration: True
+
+  # Whether to include environment feedback in reprompting for wrong attempts
+  # If True and feedback exists: use reprompt_template_feedback_solution (with solution) or reprompt_template_feedback (without solution)
+  include_environment_feedback: True
+
+  # If True, only use feedback when no solution is available (ignore feedback when solution exists)
+  # Requires include_environment_feedback=True to have any effect
+  environment_feedback_only_without_solution: True
+
+  # IS clip for loss; null disables IS weighting
+  is_clip: 2
+
+  # Reprompting template - available variables: prompt, successful_previous_attempt, feedback
+  reprompt_template: |-
+    {prompt}{solution}{feedback}
+
+    Correctly solve the original question.
+
+  # Solution template - available variables: successful_previous_attempt
+  solution_template: |-
+
+    Correct solution:
+
+    {successful_previous_attempt}
+
+  # Feedback template - available variables: feedback_raw
+  feedback_template: |-
+
+    The following is feedback from your unsuccessful earlier attempt:
+
+    {feedback_raw}
+
+  # Optional TEACHER-ONLY system prompt (reflection / workflow disposition); student never sees it.
+  # Ignored when teacher_system_prompt_file is set.
+  teacher_system_prompt: null
+
+  # Path to a text file used as the teacher system prompt (takes precedence over teacher_system_prompt).
+  teacher_system_prompt_file: null
+
+  # Privileged-context SOURCE for the teacher. One of:
+  #   sibling  - self-generated correct rollout (current SDPO; default)
+  #   cot      - ground-truth reference CoT, answer stripped
+  #   summary  - LLM summary of the GT CoT
+  #   rubric   - LLM key-point checklist of the GT CoT
+  # Non-sibling sources substitute the offline abstraction (looked up by question) only
+  # on samples that already had a successful sibling, so the mask is unchanged.
+  # Env PRIVILEGED_SOURCE overrides this value.
+  privileged_source: sibling
+
+  # Directory of <dataset>.json privileged-context files (built offline from the ground-truth CoT;
+  # not part of this release). null -> $SDPO_ROOT/datasets/privileged_context. Only used when privileged_source != sibling.
+  privileged_context_dir: null
+
+  # --- AntiSD-port switches: default = SDPO's base behaviour; antisd_recipe.sh turns them on ---
+  # AntiSD head/tail-compresses an over-budget SOLUTION before templating the teacher prompt.
+  truncate_solution_to_budget: False
+  # AntiSD tokenizes the teacher prompt without truncation and head/tail-truncates to max_reprompt_len;
+  # SDPO truncates at tokenization (side = reprompt_truncation).
+  reprompt_head_tail_truncation: False
+
+
+  # Maximum number of tokens for the solution text in teacher prompt.
+  # If set, long solutions (e.g. with full thinking traces) are truncated from the left,
+  # preserving the tail (final answer + conclusion). null disables truncation.
+  max_solution_tokens: null
+
+  # If True, only samples with a solution (rollout or dataset) participate in KL loss.
+  # Feedback-only samples are masked out to avoid biased gradients from uninformative teacher context.
+  require_solution_for_distillation: False
+
+  # If True, strip the final \boxed{...} (and surrounding whitespace) from solutions used as teacher context.
+  # Teacher sees only the reasoning process, not the final answer — avoids outcome-level shortcut bias.
+  remove_answer_from_solution: False
+
+  # Solution selection strategy: "random" (default) or "prefer_short"
+  # "prefer_short": sort candidates by response length, sample uniformly from shorter half.
+  # Biases toward concise solutions while preserving diversity.
+  solution_selection: random
+
+  # Whether to truncate solution text at the first correct \boxed{answer}.
+  # Removes post-answer verbose verification to prevent length explosion.
+  truncate_solution_at_correct_answer: false
+
+  # Whether to provide ground truth answer in feedback-only reprompts (when no solution is available).
+  # When true, appends "The correct answer is \boxed{...}." to feedback for samples where all rollouts failed.
+  provide_ground_truth_in_feedback: false
+
+  # Solution source priority: "group_first" (rollout then dataset fallback),
+  # "external_first" (dataset then rollout fallback), "external_only" (dataset only),
+  # "group_only" (rollout only, no fallback).
+  # ours = SDPO's base behaviour (sibling rollouts only). 'group_first' would fall back to extra_info.solution
+  # when a group has no correct sibling -- none of our datasets carry that key, but keep the base semantics explicit.
+  solution_source: group_only
+
+  # Teacher prompt content: "full" (solution + feedback, default) or "feedback_only"
+  # (no solution, only correctness feedback from reward function).
+  # When "feedback_only", all solution_strs are suppressed and the teacher prompt
+  # uses reprompt_template_feedback_only with environment feedback.
+  solution_content: full
+
+  # Solution mode: transforms applied to solution text before teacher prompt building.
+  # "normal": use actual solutions (default)
+  # "cross_problem": shuffle solutions across batch (test content relevance)
+  # "none": no solution (test if solution text is needed at all)
+  # "shuffle_sentences": break structural coherence (test structure vs content)
+  # "answer_only": only \boxed{answer}, no reasoning (test if reasoning structure needed)
+  # "fixed_detailed": hardcoded detailed reasoning for all samples (test problem-specificity)
+  # "fixed_generic": hardcoded brief scaffold (test if math content needed)
+  # "fixed_unrelated": hardcoded non-math text (test if ANY text works)
+  solution_mode: normal
+
+  # Suffix appended to the teacher prompt when neither solution nor feedback is available.
+  # Use with solution_content="feedback_only" + include_environment_feedback=false
+  # to add behavioral instructions (e.g. "Please answer more carefully.").
+  teacher_prompt_suffix: ""
+
+  # Reprompt style: controls how solution context is injected into the teacher prompt.
+  # "suffix" (default): solution appended after prompt in the same user message.
+  # "system_prefix": solution injected into system message, user message = bare prompt.
+  #   Ensures the user's final content is identical to bare, reducing template-induced bias.
+  reprompt_style: suffix
+
+  # Template for system_prefix mode. Uses {solution} and {feedback} placeholders.
+  reprompt_system_prefix_template: |-
+    Here is a previous attempt at the problem that follows:{solution}{feedback}
+
+  # Reprompting template when ONLY feedback is available (no solution) - variables: prompt, feedback.
+  # null = SDPO's base behaviour (reprompt_template with an empty solution section). The AntiSD arm sets
+  # the authors' template via sd_templates/antisd.yaml.
+  reprompt_template_feedback_only: null
+
+  # Wrong solution template - used when ccir.si_wrong_label="honest"
+  # Available variables: successful_previous_attempt
+  wrong_solution_template: |-
+
+    A previous incorrect attempt:
+
+    {successful_previous_attempt}
+
+# CCIR (Contrastive Causal Information Reward) config
+ccir:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl.workers.config.CCIRConfig
+
+  # Whether to enable CCIR contrastive weighting (requires loss_mode in sdpo/grpo_ccir/grpo_st/grpo_ca)
+  enabled: false
+
+  # Number of prompt shuffles (K). K=1 is most efficient.
+  num_contrastive: 1
+
+  # Sigmoid temperature for CCIR weight computation (sdpo mode)
+  temperature: 1.0
+
+  # Minimum CCIR weight, prevents fully zeroing out tokens (sdpo mode)
+  min_weight: 0.1
+
+  # Weight λ for CCIR S_t within self-distillation.
+  # sdpo mode: KL weight = 1 + λ·S_t(v). grpo_ca mode: PRM_t = (s-t) - λ·(t-c).
+  prm_weight: 0.1
+
+  # Coefficient γ for KL regularization strength relative to GRPO: L = L_GRPO + γ·L_CCIR_KL
+  kl_coeff: 0.1
+
+  # (grpo_st mode) Multiplicative S_t modulation coefficient for advantage refinement.
+  # A_refined(t) = A_seq * (1 + st_advantage_alpha * S_t_norm(t)) when A_seq != 0.
+  st_advantage_alpha: 0.3
+
+  # (grpo_st mode) Additive S_t coefficient when all rollouts fail (A_seq = 0).
+  # A_refined(t) = st_fallback_beta * S_t_norm(t). Provides dense signal from S_t.
+  st_fallback_beta: 0.05
+
+  # (grpo_ca mode) PRM → ORM injection strength.
+  # A_t = orm_weight * A_seq + ca_lambda * normalize(PRM_t), where PRM_t = (s-t) - prm_weight*(t-c).
+  ca_lambda: 0.1
+
+  # (grpo_ca mode) Lambda scheduling mode.
+  # "fixed": use ca_lambda as constant (default).
+  # "adaptive": lambda = ca_lambda_target / |base_kl|_mean, clamped to [ca_lambda_min, ca_lambda_max].
+  ca_lambda_mode: fixed
+  # Scope for teacher_perp λ controller: "per_seq" (default) or "batch_mean".
+  # per_seq: each sequence gets own λ from its own t_ppl.
+  # batch_mean: all sequences share λ from batch-average t_ppl (spike-filtered).
+  ca_lambda_tppl_scope: per_seq
+  ca_lambda_target: 0.001
+  ca_lambda_min: -0.02
+  ca_lambda_max: 0.5
+  # Length-aware lambda: lambda decreases (can go negative) when responses are too long.
+  # lambda = base * (1 - length_alpha * max(0, mean_len/length_target - 1))
+  ca_lambda_length_target: 10000.0
+  ca_lambda_length_alpha: 2.0
+
+  # Teacher-perplexity-aware lambda: directly measures whether teacher understands responses.
+  # lambda = base * (1 - perp_alpha * max(0, teacher_perp/perp_target - 1))
+  # Unifies LenFlip and adaptive lambda into a principled teacher-centric framework.
+  ca_lambda_perp_target: 0.0    # zero-crossing perp (0 = auto: calibrate from warmup median)
+  # When target = 0 (auto): prefer ratio if > 0, else use delta.
+  #   ratio: target = warmup_median × ratio  (cross-model consistent, recommended)
+  #   delta: target = warmup_median − delta  (absolute offset, legacy)
+  ca_lambda_perp_target_ratio: 0.0   # 0 = disabled; typical 0.93 for KKT setups
+  ca_lambda_perp_delta: 0.10   # absolute offset below warmup median (fallback auto)
+  # Hysteresis (Schmitt) reactivation — batch_mean scope only:
+  #   deactivate when batch t_ppl < ca_lambda_perp_target      → λ = λ_min
+  #   reactivate when batch t_ppl > reactivate_threshold       → normal λ formula
+  # Priority: reactivate_target (absolute) > reactivate_ratio × warmup_median > disabled.
+  ca_lambda_perp_reactivate_target: 0.0  # absolute reactivate t_ppl (0 = disabled / use ratio)
+  ca_lambda_perp_reactivate_ratio: 0.0   # relative (e.g. 1.0 = 100% warmup_median)
+  ca_lambda_perp_alpha: 2.0    # sensitivity: λ = base * α * log(perp/target)
+  ca_lambda_perp_mask: 3.0     # per-seq mask: PRM=0 when teacher_perp > this
+  ca_lambda_warmup_steps: 5    # warmup: collect t_ppl baseline, λ=0 (ORM only)
+  ca_lambda_mean_shift: false  # batch-mean shift: if mean(λ)<0, shift up so mean=0
+  ca_lambda_mean_shift_always: false  # always shift to zero mean (stronger than above)
+
+  # Step-based lambda cutoff: set lambda=0 after N steps (-1 = disabled).
+  # Two-phase training: s-t PRM acceleration first, then pure GRPO.
+  ca_lambda_step_cutoff: -1
+  ca_lambda_s_specific_gate: none      # "none" or "proportional"
+  ca_lambda_s_specific_threshold: 0.0  # 0 = auto-calibrate from warmup
+  ca_lambda_s_specific_floor: 0.0      # minimum gate multiplier
+
+  # PRM-strength-adaptive λ decay: λ_final = λ * clamp(signal/baseline, decay_floor, 1.0).
+  # Natural soft-exit: λ shrinks as PRM magnitude declines (training converges).
+  # Baseline calibrated during warmup (reuses ca_lambda_warmup_steps). EMA smoothing on signal.
+  # "none": disabled. "bkl_abs": |base_kl|.mean() (recommended). "prm_abs": |PRM_t|.mean().
+  ca_lambda_decay_mode: none
+  ca_lambda_decay_floor: 0.0           # 0 = full exit allowed; >0 = min λ multiplier
+  ca_lambda_decay_ema: 0.9             # EMA smoothing on signal (0 = no smoothing)
+
+  # CCIR cross-problem: evaluate responses under different problem contexts.
+  # Separates x-specific (useful) from x-generic (length-explosion driver) PRM signal.
+  ccir_cross_problem: false
+  # "full": [s(x)-s(x')] - beta*[t(x,y')-t(x',y')];
+  # "blend": s(x)-0.5*[s(x')+t(x',y')];
+  # "blend_current_teacher": s(x)-[(1-alpha)*s(x') + alpha*t(x)]
+  ccir_cross_problem_mode: full
+  ccir_cross_problem_beta: 1.0
+  ccir_cross_problem_alpha: 0.5
+
+  # KL constraint against reference policy (frozen initial model via t_nosol).
+  # Subtracts beta_kl * (s - t_nosol) from advantage. Directly damps self-reinforcement (Δlog p).
+  # When kl_ref_beta = ca_lambda: pure content credit mode (Δlog p cancels).
+  kl_ref_beta: 0.0
+
+  # FutureConf gate: weight PRM by teacher's discounted future confidence.
+  # gate_t = exp(FutureConf_t / remaining_len), teacher-informed FIPO-style credit assignment.
+  # 0 = disabled. Typical: 0.99 (long horizon), 0.95 (short horizon).
+  future_conf_gamma: 0.0
+
+  # PRM position mask: only apply PRM to first N response tokens (0 = disabled).
+  # Simple alternative to FutureConf: teacher is informative within ~4-8K tokens, noise beyond.
+  prm_max_position: 0
+
+  # Per-sequence PRM length mask: zero PRM for sequences with length >= threshold.
+  # Long sequences risk truncation → PRM unreliable → let ORM handle.
+  # Creates self-correcting cycle: PRM drives length up → threshold triggers → ORM corrects back.
+  # 0 = disabled. Recommended: 0.75 * max_response_length.
+  prm_length_mask_threshold: 0
+
+  # Entropy gate: turn off PRM when batch entropy drops past warmup-calibrated threshold.
+  # hysteresis: close at low, reopen at high (prevents flapping).
+  # Data-calibrated: crashes happen at H/H_init < 45%, stable runs > 60%.
+  # Modes: "none" | "binary" | "hysteresis"
+  entropy_gate_mode: none
+  entropy_gate_h_ratio_low: 0.45         # close PRM threshold
+  entropy_gate_h_ratio_high: 0.60        # reopen PRM threshold
+
+  # Contrastive length brake: adds beta * (t_correct - t_wrong) to PRM.
+  # Contrastive signal has opposite length bias to s-t → acts as length brake.
+  contrastive_brake_beta: 0.0
+  contrastive_brake_adaptive: false
+  contrastive_brake_length_target: 10000.0
+
+  # Position debiasing: remove position-dependent PRM bias after seqnorm.
+  # "none": disabled. "quartile": 4-bin debiasing. "linear": linear regression.
+  position_debias_mode: none
+
+  # Length penalty: subtract penalty from advantage for long responses.
+  # penalty = alpha * max(0, (len - target) / target) per token.
+  length_penalty_alpha: 0.0
+  length_penalty_target: 10000.0
+
+  # (grpo_ca mode) Weight on GRPO's sequence-level advantage.
+  # 1.0 = standard GRPO + PRM. 0.0 = pure PRM, no outcome reward.
+  orm_weight: 1.0
+
+  # (grpo_ca mode) Whether to normalize PRM_t to zero-mean unit-variance.
+  # true: constant signal magnitude, risks amplifying noise as model converges.
+  # false: raw PRM_t, signal naturally decays as student approaches teacher.
+  # NOTE: legacy flag. Use prm_normalize_mode for finer control.
+  prm_normalize: true
+
+  # (grpo_ca mode) PRM normalization granularity: "batch", "sequence", "sequence_demean", or "none".
+  # batch: per-batch zero-mean unit-var (same as prm_normalize=true). Length bias NOT removed.
+  # sequence: per-sequence zero-mean unit-var. Removes length-dependent PRM bias.
+  #   Each sequence's PRM becomes a pure credit assignment weight (mean=0, var=1).
+  #   Supersedes prm_normalize and prm_seq_demean.
+  # sequence_demean: Per-sequence mean removal only (no std division). RECOMMENDED.
+  #   Preserves signal scale information across sequences (stronger signal = more influence).
+  #   Prevents PRM from adding net positive/negative bias per sequence (pure credit redistribution).
+  #   v12 experiments show: seq_demean > none > seqnorm for peak accuracy.
+  # none: no normalization. Raw PRM signal.
+  prm_normalize_mode: sequence_demean
+
+  # (grpo_ca mode) Truncation magnitude for PRM signal. null disables.
+  # Clamps PRM (after optional normalization) to [-prm_clip, prm_clip].
+  prm_clip: null
+
+  # (grpo_ca mode) Anchor PRM signal magnitude to ORM signal magnitude.
+  # When true, PRM is rescaled so |ca_lambda * PRM|_mean ≈ ca_lambda * |orm_term|_mean,
+  # making ca_lambda a true relative ratio. Prevents PRM from dominating when A_seq collapses.
+  prm_anchor_to_orm: false
+
+  # (grpo_ca mode) Remove per-sequence mean from PRM signal.
+  # When true, PRM only does within-sequence credit redistribution (no net bias per seq).
+  # ORM controls direction (reinforce/suppress), PRM controls intra-seq token assignment.
+  # Prevents PRM's systematic positive bias from driving length explosion.
+  prm_seq_demean: false
+
+  # (grpo_ca mode) Advantage composition mode: "additive", "multiplicative", or "credit".
+  # additive: A_t = orm_weight * A_seq + ca_lambda * PRM. PRM has independent direction.
+  # multiplicative: A_t = A_seq * (1 + ca_lambda * PRM). PRM only modulates ORM direction.
+  # credit: A_t = A_seq * softmax(PRM / τ) * T. PRM redistributes ORM credit across tokens.
+  #   - PRM is NOT an independent reward, only a token-level weight on the ORM advantage.
+  #   - Total gradient per sequence is fixed by |A_seq| (immune to PRM magnitude growth).
+  #   - ca_lambda acts as temperature τ: large = uniform credit, small = concentrated credit.
+  #   - ISSUE: softmax saturates → winner-take-all → 99% tokens get zero gradient.
+  # anti_credit: A_t = A_seq * softmax(-sign(A_seq) * PRM / τ) * T. Anti-PRM credit.
+  #   - For correct seqs (A>0): f_t = t_t - s_t → credit to tokens where teacher knows but student doesn't.
+  #   - For incorrect seqs (A<0): f_t = s_t - t_t → penalty on tokens where student confidently diverges.
+  #   - Negative feedback: confidence increase → LESS credit → self-correcting (no reward hacking).
+  #   - Self-annealing: as student learns, gap→0 → uniform credit → degrades to standard GRPO.
+  #   - External driving force from teacher (t_t), but hack-proof due to sign flip.
+  ca_mode: additive
+
+  # RLSD (Yang 2026) ablation params (active only when ca_mode=rlsd).
+  # A_t = A_seq · ((1−λ) + λ · clip(exp(sign(A)·(t−s)), 1−ε, 1+ε)).
+  # Direction is sign(A_seq) (env reward); evidence ratio modulates magnitude only.
+  rlsd_eps_w: 0.2
+  rlsd_lambda: 1.0
+
+  # (grpo_ca mode) Entropy-neutral PRM decorrelation.
+  # PRM_t = s_t - t_t is correlated with student confidence s_t, causing "policy momentum"
+  # that drives entropy collapse. Decorrelation removes this correlation:
+  #   PRM_EN = PRM - β·(s - mean(s)),  β = Cov(PRM, s) / Var(s) per sequence.
+  # "none": no decorrelation (original PRM).
+  # "decorrelate": remove s_t-correlated component from PRM_t. β adapts automatically during training.
+  # "decorrelate_advantage": decorrelate on refined_advantages (after Step 5).
+  #   Catches all s_t correlation sources, not just PRM.
+  prm_entropy_neutral: none
+
+  # DEPRECATED: CCIR debiasing is now hardcoded as β=1 in grpo_ca; inner weight via prm_weight.
+  ca_beta: 1.0
+
+  # (grpo_ca mode) tanh saturation: bounds raw PRM to [-tau, tau] before normalization.
+  # Compresses extreme PRM values, breaking "rich get richer" feedback loop.
+  # Applied BEFORE seqnorm. null = disabled.
+  prm_tanh_tau: null
+
+  # (grpo_ca mode) Token-level forward-style raw PRM reweighting.
+  # Let Δ_t = s_t - t_t from current student/teacher token log-probs.
+  # "token_is": w_t = exp(clamp(-beta * Δ_t, -log_clip, log_clip))
+  #            = exp(clamp(beta * (t_t - s_t), ...))
+  # Then PRM_t <- w_t * PRM_t BEFORE tanh / maxent / normalization.
+  # Exact local forward-KL density when PRM_t is pure raw Δ_t = s_t - t_t.
+  # prm_forward_mode: "none" | "token_is" | "renyi_unbiased" | "jsd_unbiased"
+  # token_is:       PRM_t <- exp(beta*(t-s)) * PRM_t (biased IS reweight, fwdRawTok)
+  # renyi_unbiased: PRM_t <- exp(clamp(alpha_r*(t-s), -log_clip, log_clip)) - 1
+  #                 Unbiased PG advantage for Rényi-α f-divergence minimization.
+  #                 alpha_r=1.0 -> forward KL (E[PRM]=0 via IS identity)
+  #                 alpha_r=0.5 -> Hellinger (softer IS weighting)
+  #                 Signed structure preserved via -1 centering.
+  # jsd_unbiased:   PRM_t <- 0.5·sign·(softplus(clamp(u_v)) - log 2)
+  #                 Jensen-Shannon divergence maximization (sign=-1 anti-distill default).
+  #                 Principled coef on ∇log π_s = 0.5·(log 2 - softplus(u)):
+  #                 bounded by log 2/2 ≈ 0.347 on u<<0 (q1) side — no exp q1 blow-up.
+  #                 Linear tail ≈ -0.5·u on u>>0 (q4) side — no exp q4 blow-up.
+  #                 Stopping at u_v = 0 per token. u_v respects virtual_alpha blending.
+  prm_forward_mode: none
+  prm_forward_beta: 1.0
+  prm_forward_log_clip: 5.0
+  prm_renyi_alpha: 1.0
+  # prm_renyi_sign: +1.0 = minimize K3 (distill), -1.0 = maximize K3 (K3-REINFORCE, preserve student).
+  prm_renyi_sign: 1.0
+  # prm_renyi_virtual_alpha: virtual teacher log π_v = α*t(x,z) + (1-α)*s(x').
+  # 1.0 = pure teacher (no x' anchor); 0.25 = 75% x'-anchor + 25% teacher-away.
+  # Requires ccir_cross_problem=true when < 1.0.
+  prm_renyi_virtual_alpha: 1.0
+
+  # Adaptive u clip: during warmup collect σ_ref = mean_batch(std(base_kl)),
+  # then post-warmup clamp base_kl to ±k_sigma · σ_ref. Unified per-model via
+  # warmup-calibrated σ_ref. Operates on base_kl = s - t = -u.
+  prm_u_clip_mode: none       # "none" | "adaptive"
+  prm_u_clip_k_sigma: 2.0
+  prm_u_clip_sigma_ref_fixed: 0.0   # if > 0, skip warmup, use this σ_ref directly
+
+  # (grpo_ca mode) Alignment gate: computes Pearson correlation between per-seq PRM and ORM.
+  # When correlation > 0, PRM amplifies correctness signal (gate open).
+  # When correlation <= 0, PRM is noise (gate closes to 0).
+  # prm_orm_correlation is always logged when orm_weight > 0 (diagnostic).
+  prm_alignment_gate: false
+
+  # (grpo_ca mode) MaxEnt RL: entropy-aware advantage correction.
+  # Adds -α·(s_t - mean(s_t)) to refined advantages, counteracting PRM's
+  # correlation with student confidence s_t ("policy momentum").
+  # At α = ca_lambda, student s_t completely cancels from PRM_t = s_t - t_t.
+  # "none": disabled. "fixed": constant α. "adaptive": SAC dual gradient (α auto-tunes).
+  maxent_coeff: none
+
+  # Only apply maxent when ca_lambda > 0 (exploration mode).
+  # Prevents entropy ratcheting during LenFlip oscillation or after step cutoff.
+  maxent_conditional: false
+
+  # Initial α value for MaxEnt correction.
+  # "fixed" mode: this IS α (constant). "adaptive" mode: starting α.
+  maxent_alpha: 0.1
+
+  # Target entropy H* for adaptive α and entropy gate.
+  # null = auto-initialize from first training batch.
+  maxent_h_target: null
+
+  # Learning rate for adaptive α: α ← α - maxent_lr·(H_batch - H_target).
+  # Larger → faster α response. Only used when maxent_coeff="adaptive".
+  maxent_lr: 0.01
+
+  # Entropy gate: scale PRM_processed by clamp(H_batch / H_target, 0, 1).
+  # When entropy drops below target, PRM is proportionally suppressed.
+  # Composable with maxent_coeff (A/C features). Independent of α correction.
+  maxent_entropy_gate: false
+
+  # Position of MaxEnt α correction in the pipeline.
+  # "advantage": subtract from refined advantage (after normalization). Default.
+  # "prm_raw": subtract from PRM_t (before normalization). Allows seqnorm to process cleaned signal.
+  maxent_position: advantage
+
+  # (grpo_ca mode) Solution Influence (SI): teacher-internal credit signal.
+  # SI_t = t_sol - t_bare = log π_ema(y|x,sol,y<t) - log π_ema(y|x,y<t)
+  # Measures how much knowing the correct solution helps predict each token.
+  # Key property: NO student log-probs → immune to student confidence hack.
+  # Same teacher model, two contexts → drift-invariant (confidence changes cancel).
+  # "none": disabled (default). Use existing PRM = s_t - t_t.
+  # "centered": PRM += si_lambda * (SI_t - mean(SI_t)). Adds centered SI to PRM.
+  # "raw": PRM += si_lambda * SI_t. Adds raw SI to PRM (not zero-sum).
+  # "replace": PRM = SI_t - mean(SI_t). Replaces PRM entirely with centered SI.
+  #   In "replace" mode, PRM no longer contains s_t at all — purely teacher-internal.
+  #   Centered SI is zero-sum per sequence → only redistributes credit, ORM controls direction.
+  # "teacher_only": PRM = centered(t_t). Zero s_t by construction.
+  #   Does NOT need nosol forward pass — uses teacher_log_prob directly.
+  # Cost (except teacher_only): one extra teacher forward pass (without solution context).
+  # PRM construction method: how t(sol), t(nosol), and s are combined in Step 1.
+  # "raw": PRM = t(sol) - s. Default.
+  # "indep_norm": PRM = standardize(t) - standardize(s) per sequence.
+  # "reverse": PRM = s - t(sol). Old sign convention (v3-v10).
+  # "self_reward": PRM = s. Pure student confidence, no teacher.
+  # "teacher_contrastive": PRM = t(sol) - t(nosol). No student. Template cancels.
+  # "s_minus_t_wrong": PRM = s - t(nosol). Student minus teacher-with-wrong/bare context.
+  # "t_wrong_minus_s": PRM = t(nosol) - s. Teacher-with-wrong/bare context minus student.
+  # "s_minus_s_shuffled": PRM = s - shuffle(s). Position-shuffled self-perturbation control.
+  # "s_minus_s_other": PRM = s - roll(s, batch). Cross-response structured perturbation control.
+  # "random_credit": PRM = N(0,1). Pure Gaussian noise control.
+  prm_construction: raw
+
+  si_mode: none
+  si_lambda: 1.0
+
+  # SI reference context: what the "nosol" teacher sees.
+  # "bare": question only (default).
+  # "wrong_sibling": question + wrong solution from same group.
+  # "feedback_contrastive": prompt + counterfactual feedback (flipped correct/incorrect).
+  #   Intended for use with solution_content=feedback_only and si_model=student.
+  #   SI_t = π(y|honest_feedback) - π(y|counterfactual_feedback). s_t cancels.
+  # "solution_contrastive": prompt + WRONG solution (same template as correct).
+  #   SI_t = π(y|correct_sol) - π(y|wrong_sol). s_t(bare) exactly cancels.
+  #   Both sides use same reprompt template → no template artifacts (unlike v7).
+  #   Fallback for all-correct/all-fail groups: SI_t = 0 → pure ORM.
+  si_reference: bare
+
+  # SI wrong solution label: how the wrong sibling is framed in the prompt.
+  # Only effective when si_reference="wrong_sibling".
+  # "same": use solution_template (default). "honest": use wrong_solution_template.
+  si_wrong_label: same
+
+  # SI model source: which model computes SI log-probabilities.
+  # "ema": EMA teacher (default). "student": current student model (π).
+  si_model: ema
+
+  # Amplification factor for contrastive component in "reverse_combined" prm_construction.
+  # PRM = (s - t) + contrastive_lambda * (t_correct - t_wrong)
+  contrastive_lambda: 5.0
+
+  # Gamma blending: PRM = s - gamma * t in "reverse" prm_construction.
+  # gamma=0: pure self-reward. gamma=1: full s-t (default).
+  prm_gamma: 1.0
+
+# Constant C in Dual-clip PPO; clips when advantage < 0 and ratio > C
+clip_ratio_c: 3.0
+
+# Loss aggregation mode: "token-mean", "seq-mean-token-sum", "seq-mean-token-mean", or "seq-mean-token-sum-norm"
+loss_agg_mode: token-mean
+
+# Scale factor for "seq-mean-token-sum-norm" loss aggregation mode.
+# If null, uses response_length. Set to a constant to ensure consistent normalization.
+loss_scale_factor: null
+
+# Entropy regularization coefficient in PPO loss
+entropy_coeff: 0
+
+# When true, the actor forward will request entropy from the model
+calculate_entropy: false
+
+# Whether to use KL loss instead of KL reward penalty. True for GRPO
+use_kl_loss: false
+
+# Whether to enable PrefixGrouper shared-prefix forward
+use_prefix_grouper: false
+
+# Whether to use torch.compile()
+# oc.select: the default val for ref.use_torch_compile
+use_torch_compile: true
+
+# KL loss coefficient when use_kl_loss is enabled. For GRPO
+kl_loss_coef: 0.001
+
+# Type of KL divergence loss. Options: "kl"(k1), "abs", "mse"(k2), "low_var_kl"(k3), "full"
+kl_loss_type: low_var_kl
+
+# Number of PPO epochs per batch
+ppo_epochs: 1
+
+# Shuffle training data across PPO epochs
+shuffle: false
+
+# The seed used to construct mini-batch
+data_loader_seed: 42
+
+# checkpoint configs
+checkpoint:
+
+  # Target dataclass for this configuration
+  _target_: verl.trainer.config.CheckpointConfig
+
+  # What to include in saved checkpoints
+  # with 'hf_model' you can save whole model as hf format, now only use sharded model checkpoint to save space
+  save_contents: ['model', 'optimizer', 'extra']
+
+  # For more flexibility, you can specify the contents to load from the checkpoint.
+  # .xxx refers to the local variable xxx from the same level of hierarchy similar to python pkg
+  load_contents: ${.save_contents}
+
+  # Whether to save checkpoints asynchronously. Only effective for Megatron as of now.
+  async_save: False
+
+# optimizer configs
+optim:
+
+  # Learning rate
+  lr: 1e-6
+
+  # Warmup steps ratio (used if lr_warmup_steps is 0 or negative)
+  lr_warmup_steps_ratio: 0.0
+
+  # Total training steps (must be overridden at runtime)
+  total_training_steps: -1
+
+  # Weight decay
+  weight_decay: 0.01
+
+  # Prioritized. None, 0 or Negative values mean delegating to lr_warmup_steps_ratio.
+  lr_warmup_steps: -1
+
+
+# Whether to use custom fused kernels (e.g., FlashAttention, fused MLP)
+use_fused_kernels: ${oc.select:actor_rollout_ref.model.use_fused_kernels,false}
+
+# profile the actor model in `update_policy`
+profiler:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl.utils.profiler.ProfilerConfig
+
+  # profiler tool, default same as profiler.tool in global config
+  # choices: nsys, npu, torch
+  tool: ${oc.select:global_profiler.tool,null}
+
+  # whether enable profile on Actor
+  enable: False
+
+  # Whether to profile all ranks.
+  all_ranks: False
+
+  # The ranks that will be profiled. [] or [0,1,...]
+  ranks: []
+
+  # profile results saving path
+  save_path: ${oc.select:global_profiler.save_path,null}
+
+  # specific tool config which only related to the role
+  tool_config:
+
+    # nsys tool config
+    nsys:
+
+      # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+      _target_: verl.utils.profiler.config.NsightToolConfig
+
+      # True for each task has its own database, False for all tasks in one training step share one database.
+      discrete: ${oc.select:global_profiler.global_tool_config.nsys.discrete}
+
+    # npu config
+    npu:
+
+      # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+      _target_: verl.utils.profiler.config.NPUToolConfig
+
+      # Contents to profile, can be empty
+      # options: npu, cpu, memory, shapes, module, stack
+      contents: []
+
+      # Collection level, optional values: level_none, level0, level1, level2.
+      level: "level0"
+
+      # Whether to automatically parse the data.
+      analysis: True
+
+      # True for each task has its own database, False for all tasks in one training step share one database.
+      discrete: False
+
+    # torch profiler config
+    torch:
+
+      # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+      _target_: verl.utils.profiler.config.TorchProfilerToolConfig
+
+      # start profile mini-batch in training
+      # NOTICE: different with global steps config which refers to iteration
+      # This field only related with mini-batch
+      step_start: 0
+
+      # stop profile mini-batch in training
+      step_end: null
+
+    # torch memory profiler config
+    torch_memory:
+
+      # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+      _target_: verl.utils.profiler.config.TorchMemoryToolConfig
+
+      # Maximum number of memory allocation entries to track
+      trace_alloc_max_entries: ${oc.select:global_profiler.global_tool_config.torch_memory.trace_alloc_max_entries,100000}
+
+      # Stack trace depth for memory allocations
+      stack_depth: ${oc.select:global_profiler.global_tool_config.torch_memory.stack_depth,32}
+
+# Router replay configuration for MoE models
+router_replay:
+
+  # Target dataclass for this configuration
+  _target_: verl.workers.config.RouterReplayConfig
+
+  # Router replay mode: disabled, R2, R3
+  # - R2: Use R2 routing strategy (record mode)
+  # - R3: Use R3 routing strategy (record mode)
+  mode: disabled
+
+  # File path to save recorded routing decisions
+  # Required when mode is 'record', 'R2', or 'R3'
+  record_file: null
+
+  # File path to load recorded routing decisions for replay
+  # Required when mode is 'replay'
+  replay_file: null
